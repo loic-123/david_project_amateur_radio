@@ -16,37 +16,25 @@ const locationIcon = L.divIcon({
 });
 
 /**
- * Compute the night-side polygon using suncalc.
- * For each longitude, find the latitude where the sun altitude is ~0 (terminator).
- * Then fill the night side toward the appropriate pole.
+ * Compute the night-side polygon.
+ * Uses a world-covering outer ring with a "day hole" approach:
+ * The outer ring covers the entire world, and we cut out the daytime side.
+ * Leaflet Polygon with two rings = outer boundary + inner hole.
  */
 function computeNightPolygon(date: Date): [number, number][][] {
   const SunCalc = require("suncalc");
 
-  // Build terminator line: for each longitude, binary-search for the latitude
-  // where sun altitude crosses zero.
+  // Build terminator line: for each longitude, find the latitude where sun altitude = 0
   const terminatorPoints: [number, number][] = [];
 
   for (let lon = -180; lon <= 180; lon += 2) {
-    // Binary search for latitude where sun altitude = 0
-    let lo = -90, hi = 90;
-    // First check which pole is in daylight
-    const altNorth = SunCalc.getPosition(date, 89, lon).altitude;
-    const altSouth = SunCalc.getPosition(date, -89, lon).altitude;
-    const altMid = SunCalc.getPosition(date, 0, lon).altitude;
-
-    // Find the terminator latitude by binary search
-    // The terminator crosses where altitude = 0
-    // We need to find the boundary between day and night
-    let foundLat = 0;
     let found = false;
+    let foundLat = 0;
 
-    // Check if there's a crossing between south and north
     for (let lat = -90; lat < 90; lat += 5) {
       const a1 = SunCalc.getPosition(date, lat, lon).altitude;
       const a2 = SunCalc.getPosition(date, lat + 5, lon).altitude;
       if ((a1 >= 0 && a2 < 0) || (a1 < 0 && a2 >= 0)) {
-        // Refine with binary search
         let low = lat, high = lat + 5;
         for (let j = 0; j < 15; j++) {
           const mid = (low + high) / 2;
@@ -70,19 +58,29 @@ function computeNightPolygon(date: Date): [number, number][][] {
 
   if (terminatorPoints.length < 2) return [];
 
-  // Determine which pole is night (negative sun altitude)
+  // Which pole has daylight?
   const altAtNorthPole = SunCalc.getPosition(date, 89, 0).altitude;
-  const nightPole = altAtNorthPole < 0 ? 90 : -90;
+  const dayPole = altAtNorthPole >= 0 ? 90 : -90;
 
-  // Build the night polygon: terminator line + close via the night pole
-  const nightPoly: [number, number][] = [
+  // Build the "day polygon": terminator + close via the day pole
+  const dayPoly: [number, number][] = [
     ...terminatorPoints,
-    [nightPole, terminatorPoints[terminatorPoints.length - 1][1]],
-    [nightPole, terminatorPoints[0][1]],
+    [dayPole, terminatorPoints[terminatorPoints.length - 1][1]],
+    [dayPole, terminatorPoints[0][1]],
     terminatorPoints[0],
   ];
 
-  return [nightPoly];
+  // Outer ring covering the whole world
+  const worldRing: [number, number][] = [
+    [-90, -180],
+    [-90, 180],
+    [90, 180],
+    [90, -180],
+    [-90, -180],
+  ];
+
+  // Return [outer, hole] — Leaflet renders the area between them (= night)
+  return [worldRing, dayPoly];
 }
 
 function MapClickHandler({ onLocationSelect }: { onLocationSelect: (lat: number, lon: number) => void }) {
@@ -100,12 +98,11 @@ interface WorldMapProps {
 }
 
 export default function WorldMap({ location, onLocationSelect }: WorldMapProps) {
-  const [nightPolygon, setNightPolygon] = useState<[number, number][]>([]);
+  const [nightRings, setNightRings] = useState<[number, number][][]>([]);
 
   useEffect(() => {
     const update = () => {
-      const polys = computeNightPolygon(new Date());
-      setNightPolygon(polys.length > 0 ? polys[0] : []);
+      setNightRings(computeNightPolygon(new Date()));
     };
     update();
     const interval = setInterval(update, 60000);
@@ -123,9 +120,9 @@ export default function WorldMap({ location, onLocationSelect }: WorldMapProps) 
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {nightPolygon.length > 0 && (
+      {nightRings.length === 2 && (
         <Polygon
-          positions={nightPolygon}
+          positions={nightRings}
           pathOptions={{
             color: "transparent",
             fillColor: "#000028",
