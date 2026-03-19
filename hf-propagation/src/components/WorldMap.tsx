@@ -3,65 +3,86 @@
 import { useEffect, useState, useMemo } from "react";
 import { MapContainer, TileLayer, Marker, Polygon, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import SunCalc from "suncalc";
 import { QTHLocation } from "@/types";
 
-// Fix default marker icon (Leaflet + webpack issue)
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
-
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: markerIcon2x.src,
-  iconUrl: markerIcon.src,
-  shadowUrl: markerShadow.src,
+// Custom marker icon using a simple SVG circle (avoids Leaflet default icon loading issues)
+const locationIcon = L.divIcon({
+  html: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="12" r="8" fill="#3b82f6" stroke="white" stroke-width="3"/>
+  </svg>`,
+  className: "",
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
 });
 
 /**
- * Compute the day/night terminator as a polygon.
- * Returns coordinates for the "night side" of the Earth.
+ * Compute the night-side polygon using suncalc.
+ * For each longitude, find the latitude where the sun altitude is ~0 (terminator).
+ * Then fill the night side toward the appropriate pole.
  */
-function computeTerminator(date: Date): [number, number][] {
-  const points: [number, number][] = [];
+function computeNightPolygon(date: Date): [number, number][][] {
+  const SunCalc = require("suncalc");
 
-  // Get the sub-solar point
-  const jd = date.getTime() / 86400000 + 2440587.5;
-  const n = jd - 2451545.0;
-  const L0 = (280.46 + 0.9856474 * n) % 360;
-  const g = ((357.528 + 0.9856003 * n) % 360) * (Math.PI / 180);
-  const eclipticLon = L0 + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g);
-  const obliquity = 23.439 - 0.0000004 * n;
-  const declination = Math.asin(
-    Math.sin((obliquity * Math.PI) / 180) * Math.sin((eclipticLon * Math.PI) / 180)
-  );
-  const decDeg = declination * (180 / Math.PI);
+  // Build terminator line: for each longitude, binary-search for the latitude
+  // where sun altitude crosses zero.
+  const terminatorPoints: [number, number][] = [];
 
-  // Greenwich Mean Sidereal Time
-  const gmst = (280.46061837 + 360.98564736629 * (jd - 2451545.0)) % 360;
-  // Sub-solar longitude
-  const subSolarLon = (gmst + 180) % 360 - 180;
+  for (let lon = -180; lon <= 180; lon += 2) {
+    // Binary search for latitude where sun altitude = 0
+    let lo = -90, hi = 90;
+    // First check which pole is in daylight
+    const altNorth = SunCalc.getPosition(date, 89, lon).altitude;
+    const altSouth = SunCalc.getPosition(date, -89, lon).altitude;
+    const altMid = SunCalc.getPosition(date, 0, lon).altitude;
 
-  // Terminator: great circle 90° from sub-solar point
-  for (let i = 0; i <= 360; i += 2) {
-    const angle = (i * Math.PI) / 180;
-    const lat = Math.atan2(
-      -Math.cos(angle),
-      Math.sin(angle) * Math.sin(declination)
-    ) * (180 / Math.PI);
-    let lon = ((i + subSolarLon - 90) % 360 + 540) % 360 - 180;
-    points.push([lat, lon]);
+    // Find the terminator latitude by binary search
+    // The terminator crosses where altitude = 0
+    // We need to find the boundary between day and night
+    let foundLat = 0;
+    let found = false;
+
+    // Check if there's a crossing between south and north
+    for (let lat = -90; lat < 90; lat += 5) {
+      const a1 = SunCalc.getPosition(date, lat, lon).altitude;
+      const a2 = SunCalc.getPosition(date, lat + 5, lon).altitude;
+      if ((a1 >= 0 && a2 < 0) || (a1 < 0 && a2 >= 0)) {
+        // Refine with binary search
+        let low = lat, high = lat + 5;
+        for (let j = 0; j < 15; j++) {
+          const mid = (low + high) / 2;
+          const aMid = SunCalc.getPosition(date, mid, lon).altitude;
+          if ((a1 >= 0 && aMid >= 0) || (a1 < 0 && aMid < 0)) {
+            low = mid;
+          } else {
+            high = mid;
+          }
+        }
+        foundLat = (low + high) / 2;
+        found = true;
+        break;
+      }
+    }
+
+    if (found) {
+      terminatorPoints.push([foundLat, lon]);
+    }
   }
 
-  // Close the polygon: add caps at the appropriate pole for the night side
-  const nightPole = decDeg >= 0 ? -90 : 90;
+  if (terminatorPoints.length < 2) return [];
+
+  // Determine which pole is night (negative sun altitude)
+  const altAtNorthPole = SunCalc.getPosition(date, 89, 0).altitude;
+  const nightPole = altAtNorthPole < 0 ? 90 : -90;
+
+  // Build the night polygon: terminator line + close via the night pole
   const nightPoly: [number, number][] = [
-    ...points,
-    [nightPole, points[points.length - 1][1]],
-    [nightPole, points[0][1]],
-    points[0],
+    ...terminatorPoints,
+    [nightPole, terminatorPoints[terminatorPoints.length - 1][1]],
+    [nightPole, terminatorPoints[0][1]],
+    terminatorPoints[0],
   ];
 
-  return nightPoly;
+  return [nightPoly];
 }
 
 function MapClickHandler({ onLocationSelect }: { onLocationSelect: (lat: number, lon: number) => void }) {
@@ -82,7 +103,10 @@ export default function WorldMap({ location, onLocationSelect }: WorldMapProps) 
   const [nightPolygon, setNightPolygon] = useState<[number, number][]>([]);
 
   useEffect(() => {
-    const update = () => setNightPolygon(computeTerminator(new Date()));
+    const update = () => {
+      const polys = computeNightPolygon(new Date());
+      setNightPolygon(polys.length > 0 ? polys[0] : []);
+    };
     update();
     const interval = setInterval(update, 60000);
     return () => clearInterval(interval);
@@ -109,7 +133,7 @@ export default function WorldMap({ location, onLocationSelect }: WorldMapProps) 
           }}
         />
       )}
-      <Marker position={[location.lat, location.lon]} />
+      <Marker position={[location.lat, location.lon]} icon={locationIcon} />
       <MapClickHandler onLocationSelect={onLocationSelect} />
     </MapContainer>
   );
