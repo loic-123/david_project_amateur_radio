@@ -13,7 +13,14 @@ export interface BandDef {
   maxMHz: number;
   centerMHz: number;
   isLowBand: boolean;
+  ft8MHz: number;
+  cwMHz: number;
+  ssbMHz: number;
+  tip: string;
 }
+
+export type OperatingMode = "ssb" | "cw" | "ft8";
+export type PowerLevel = "qrp" | "standard" | "high";
 
 export type BandStatusLevel = "open" | "marginal" | "closed";
 export type PropagationRating = "Excellent" | "Good" | "Fair" | "Poor";
@@ -25,6 +32,7 @@ export interface BandStatus {
   fot: number;
   rating: PropagationRating;
   reason: string;
+  recommendedFreq: number;
 }
 
 export interface QTHLocation {
@@ -39,4 +47,9 @@ export interface HourlyPropagation {
   utcTime: string;
   muf: number;
   bandStatuses: BandStatus[];
+}
+
+export interface UserSettings {
+  mode: OperatingMode;
+  power: PowerLevel;
 }

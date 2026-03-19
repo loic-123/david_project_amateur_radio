@@ -22,25 +22,25 @@ export default function BandTable({ statuses }: { statuses: BandStatus[] }) {
         <thead>
           <tr className="text-gray-400 text-xs uppercase tracking-wider border-b border-gray-700">
             <th className="text-left py-2 px-3">Band</th>
-            <th className="text-left py-2 px-3">Frequency</th>
             <th className="text-center py-2 px-3">Status</th>
+            <th className="text-right py-2 px-3">Freq</th>
             <th className="text-right py-2 px-3">MUF</th>
-            <th className="text-right py-2 px-3">FOT</th>
             <th className="text-center py-2 px-3">Rating</th>
           </tr>
         </thead>
         <tbody>
           {statuses.map((s) => (
-            <tr key={s.band.name} className={`border-b border-gray-800 ${STATUS_BG[s.status]}`}>
-              <td className="py-2 px-3 font-bold text-white">{s.band.name}</td>
-              <td className="py-2 px-3 text-gray-300">
-                {s.band.minMHz.toFixed(3)}&ndash;{s.band.maxMHz.toFixed(3)}
+            <tr key={s.band.name} className={`border-b border-gray-800 ${STATUS_BG[s.status]} group`}>
+              <td className="py-2 px-3">
+                <span className="font-bold text-white">{s.band.name}</span>
               </td>
               <td className={`py-2 px-3 text-center font-semibold uppercase ${STATUS_COLORS[s.status]}`}>
                 {s.status}
               </td>
+              <td className="py-2 px-3 text-right text-blue-300 font-mono text-xs">
+                {s.status !== "closed" ? `${s.recommendedFreq.toFixed(3)}` : "—"}
+              </td>
               <td className="py-2 px-3 text-right text-gray-300">{s.muf.toFixed(1)}</td>
-              <td className="py-2 px-3 text-right text-gray-300">{s.fot.toFixed(1)}</td>
               <td className="py-2 px-3 text-center">
                 <BandBadge rating={s.rating} />
               </td>

@@ -16,7 +16,15 @@
       "Bash(npx create-next-app@latest hf-propagation --typescript --tailwind --app --src-dir --no-git --use-npm --no-turbopack --no-eslint --no-import-alias)",
       "Bash(npx create-next-app@latest hf-propagation --typescript --tailwind --app --src-dir --no-git --use-npm --no-turbopack --no-eslint --no-import-alias --yes)",
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(node -e \":*)",
+      "WebFetch(domain:www.twowayradioforum.com)",
+      "WebFetch(domain:www.nk7z.net)",
+      "WebFetch(domain:groups.io)",
+      "WebFetch(domain:www.swling.com)",
+      "WebFetch(domain:forums.radioreference.com)",
+      "WebFetch(domain:www.worldwidedx.com)",
+      "WebFetch(domain:stationproject.blog)"
     ]
   }
 }

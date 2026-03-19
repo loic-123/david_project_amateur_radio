@@ -2,11 +2,18 @@
 
 import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { SolarData, QTHLocation, BandStatus, HourlyPropagation } from "@/types";
-import { getAllBandStatuses, compute24hPropagation } from "@/lib/propagation";
+import {
+  SolarData, QTHLocation, BandStatus, HourlyPropagation,
+  OperatingMode, PowerLevel, UserSettings,
+} from "@/types";
+import {
+  getAllBandStatuses, compute24hPropagation, extractBandOpenings,
+  getSunTimes, BandOpeningWindow, SunTimes,
+} from "@/lib/propagation";
 import { loadLocation, saveLocation, toMaidenhead } from "@/lib/storage";
 import SolarDashboard from "@/components/SolarDashboard";
 import BandTable from "@/components/BandTable";
+import BandOpeningTimes from "@/components/BandOpeningTimes";
 import LocationPicker from "@/components/LocationPicker";
 import PropagationChart from "@/components/PropagationChart";
 
@@ -19,13 +26,23 @@ const DEFAULT_LOCATION: QTHLocation = {
   gridSquare: "JN18eu",
 };
 
+const MODE_LABELS: Record<OperatingMode, string> = { ssb: "SSB", cw: "CW", ft8: "FT8" };
+const POWER_LABELS: Record<PowerLevel, string> = { qrp: "QRP (5W)", standard: "100W", high: "1kW" };
+
 export default function Home() {
   const [solar, setSolar] = useState<SolarData | null>(null);
   const [location, setLocation] = useState<QTHLocation>(DEFAULT_LOCATION);
   const [bandStatuses, setBandStatuses] = useState<BandStatus[]>([]);
   const [hourlyData, setHourlyData] = useState<HourlyPropagation[]>([]);
+  const [openings, setOpenings] = useState<BandOpeningWindow[]>([]);
+  const [sunTimes, setSunTimes] = useState<SunTimes | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Settings
+  const [mode, setMode] = useState<OperatingMode>("ssb");
+  const [power, setPower] = useState<PowerLevel>("standard");
+  const settings: UserSettings = { mode, power };
 
   // Load saved location on mount
   useEffect(() => {
@@ -50,17 +67,20 @@ export default function Home() {
 
   useEffect(() => {
     fetchSolar();
-    const interval = setInterval(fetchSolar, 300000); // 5 minutes
+    const interval = setInterval(fetchSolar, 300000);
     return () => clearInterval(interval);
   }, [fetchSolar]);
 
-  // Recalculate propagation when solar data or location changes
+  // Recalculate propagation when solar data, location, or settings change
   useEffect(() => {
     if (!solar) return;
     const now = new Date();
-    setBandStatuses(getAllBandStatuses(location.lat, location.lon, now, solar));
-    setHourlyData(compute24hPropagation(location.lat, location.lon, solar));
-  }, [solar, location]);
+    setBandStatuses(getAllBandStatuses(location.lat, location.lon, now, solar, settings));
+    const hourly = compute24hPropagation(location.lat, location.lon, solar, settings);
+    setHourlyData(hourly);
+    setOpenings(extractBandOpenings(hourly));
+    setSunTimes(getSunTimes(location.lat, location.lon, now));
+  }, [solar, location, mode, power]);
 
   const handleLocationChange = (loc: QTHLocation) => {
     setLocation(loc);
@@ -69,8 +89,7 @@ export default function Home() {
 
   const handleMapClick = (lat: number, lon: number) => {
     const loc: QTHLocation = {
-      lat,
-      lon,
+      lat, lon,
       name: `${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E`,
       gridSquare: toMaidenhead(lat, lon),
     };
@@ -79,14 +98,42 @@ export default function Home() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-      {/* Header */}
-      <header className="flex items-center justify-between">
+      {/* Header + Settings */}
+      <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">HF Propagation</h1>
           <p className="text-gray-400 text-sm">Real-time amateur radio band conditions</p>
         </div>
-        <div className="text-right text-sm text-gray-400">
-          {new Date().toISOString().slice(0, 16).replace("T", " ")} UTC
+        <div className="flex items-center gap-3">
+          {/* Mode selector */}
+          <div className="flex rounded-lg overflow-hidden border border-gray-700">
+            {(Object.keys(MODE_LABELS) as OperatingMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  mode === m
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                }`}
+              >
+                {MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
+          {/* Power selector */}
+          <select
+            value={power}
+            onChange={(e) => setPower(e.target.value as PowerLevel)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-300"
+          >
+            {(Object.keys(POWER_LABELS) as PowerLevel[]).map((p) => (
+              <option key={p} value={p}>{POWER_LABELS[p]}</option>
+            ))}
+          </select>
+          <span className="text-sm text-gray-500">
+            {new Date().toISOString().slice(11, 16)} UTC
+          </span>
         </div>
       </header>
 
@@ -97,12 +144,12 @@ export default function Home() {
         </div>
       )}
 
-      {/* Solar Dashboard */}
+      {/* Solar Dashboard + Sunrise/Sunset/Grey Line */}
       <section>
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">
           Solar Conditions
         </h2>
-        <SolarDashboard solar={solar} />
+        <SolarDashboard solar={solar} sunTimes={sunTimes} />
       </section>
 
       {/* Location Picker */}
@@ -128,7 +175,7 @@ export default function Home() {
         {/* Band Table */}
         <section>
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">
-            Band Conditions
+            Band Conditions ({MODE_LABELS[mode]} / {POWER_LABELS[power]})
           </h2>
           <div className="bg-gray-900 rounded-lg p-4">
             {loading ? (
@@ -139,6 +186,18 @@ export default function Home() {
           </div>
         </section>
       </div>
+
+      {/* Band Opening Times */}
+      {openings.length > 0 && (
+        <section>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            Band Openings (Next 24h)
+          </h2>
+          <div className="bg-gray-900 rounded-lg p-4">
+            <BandOpeningTimes openings={openings} />
+          </div>
+        </section>
+      )}
 
       {/* 24h Propagation Chart */}
       <section>
@@ -157,7 +216,7 @@ export default function Home() {
       {/* Disclaimer */}
       <footer className="text-gray-600 text-xs text-center pb-4">
         Propagation estimates are based on an empirical model and may differ from professional
-        tools like VOACAP. Use as directional guidance only.
+        tools like VOACAP. MUF adjusted for {MODE_LABELS[mode]} mode and {POWER_LABELS[power]} power.
       </footer>
     </div>
   );

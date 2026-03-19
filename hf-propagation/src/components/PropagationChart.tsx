@@ -30,6 +30,8 @@ interface Props {
 }
 
 export default function PropagationChart({ data }: Props) {
+  const nowLabel = data[0]?.utcTime.slice(11, 16) ?? "";
+
   const chartData = data.map((d) => ({
     label: d.utcTime.slice(11, 16),
     muf: Math.round(d.muf * 10) / 10,
@@ -56,6 +58,14 @@ export default function PropagationChart({ data }: Props) {
           labelStyle={{ color: "#9ca3af" }}
           itemStyle={{ color: "#60a5fa" }}
           formatter={(value) => [`${value} MHz`, "MUF"]}
+        />
+        {/* "Now" marker */}
+        <ReferenceLine
+          x={nowLabel}
+          stroke="#f59e0b"
+          strokeWidth={2}
+          strokeDasharray="none"
+          label={{ value: "NOW", position: "top", fill: "#f59e0b", fontSize: 11, fontWeight: "bold" }}
         />
         <Area
           type="monotone"
