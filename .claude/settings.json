@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.hamqsl.com)",
+      "WebFetch(domain:www.electronics-notes.com)",
+      "WebFetch(domain:www.dxmaps.com)",
+      "WebFetch(domain:www.voacap.com)",
+      "WebFetch(domain:www.qsl.net)",
+      "WebFetch(domain:3fs.net.au)",
+      "WebFetch(domain:www.onallbands.com)",
+      "WebFetch(domain:hfradio.org)",
+      "WebFetch(domain:www.swpc.noaa.gov)",
+      "WebFetch(domain:www.skywave-radio.org)",
+      "WebFetch(domain:hf.dxview.org)",
+      "Bash(pip --version)",
+      "Bash(npx create-next-app@latest hf-propagation --typescript --tailwind --app --src-dir --no-git --use-npm --no-turbopack --no-eslint --no-import-alias)",
+      "Bash(npx create-next-app@latest hf-propagation --typescript --tailwind --app --src-dir --no-git --use-npm --no-turbopack --no-eslint --no-import-alias --yes)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

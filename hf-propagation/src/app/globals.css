@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+body {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Fix Leaflet z-index conflicts with dropdowns */
+.leaflet-container {
+  z-index: 1;
+}
