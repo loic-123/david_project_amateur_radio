@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polygon, useMapEvents } from "react-leaflet";
 import L from "leaflet";
+import SunCalc from "suncalc";
 import { QTHLocation } from "@/types";
 
-// Custom marker icon using a simple SVG circle (avoids Leaflet default icon loading issues)
 const locationIcon = L.divIcon({
   html: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="12" cy="12" r="8" fill="#3b82f6" stroke="white" stroke-width="3"/>
@@ -16,74 +16,100 @@ const locationIcon = L.divIcon({
 });
 
 /**
- * Compute the night-side polygon.
- * Uses a world-covering outer ring with a "day hole" approach:
- * The outer ring covers the entire world, and we cut out the daytime side.
- * Leaflet Polygon with two rings = outer boundary + inner hole.
+ * Compute the night polygon.
+ *
+ * Strategy: scan a grid of points, classify each as day or night,
+ * then build a simple polygon covering the night side.
+ *
+ * Simpler approach: for each latitude, find the two longitudes where
+ * sun altitude crosses 0 (dawn and dusk). The night area is between
+ * these two longitudes on the dark side.
  */
 function computeNightPolygon(date: Date): [number, number][][] {
-  const SunCalc = require("suncalc");
+  // For each latitude from -80 to 80, find the two longitude crossings
+  const latStep = 3;
+  const lonStep = 1;
 
-  // Build terminator line: for each longitude, find the latitude where sun altitude = 0
-  const terminatorPoints: [number, number][] = [];
+  // We'll build the night polygon as two edges:
+  // - "west edge" of the night zone (going from south to north)
+  // - "east edge" of the night zone (going from north to south)
+  const westEdge: [number, number][] = [];
+  const eastEdge: [number, number][] = [];
 
-  for (let lon = -180; lon <= 180; lon += 2) {
-    let found = false;
-    let foundLat = 0;
+  for (let lat = -80; lat <= 80; lat += latStep) {
+    // Find longitude crossings at this latitude
+    const crossings: { lon: number; toDay: boolean }[] = [];
 
-    for (let lat = -90; lat < 90; lat += 5) {
-      const a1 = SunCalc.getPosition(date, lat, lon).altitude;
-      const a2 = SunCalc.getPosition(date, lat + 5, lon).altitude;
-      if ((a1 >= 0 && a2 < 0) || (a1 < 0 && a2 >= 0)) {
-        let low = lat, high = lat + 5;
-        for (let j = 0; j < 15; j++) {
-          const mid = (low + high) / 2;
-          const aMid = SunCalc.getPosition(date, mid, lon).altitude;
-          if ((a1 >= 0 && aMid >= 0) || (a1 < 0 && aMid < 0)) {
-            low = mid;
-          } else {
-            high = mid;
-          }
-        }
-        foundLat = (low + high) / 2;
-        found = true;
-        break;
+    let prevAlt = SunCalc.getPosition(date, lat, -180).altitude;
+    for (let lon = -180 + lonStep; lon <= 180; lon += lonStep) {
+      const alt = SunCalc.getPosition(date, lat, lon).altitude;
+      if (prevAlt < 0 && alt >= 0) {
+        const frac = -prevAlt / (alt - prevAlt);
+        crossings.push({ lon: lon - lonStep + frac * lonStep, toDay: true });
+      } else if (prevAlt >= 0 && alt < 0) {
+        const frac = prevAlt / (prevAlt - alt);
+        crossings.push({ lon: lon - lonStep + frac * lonStep, toDay: false });
       }
+      prevAlt = alt;
     }
 
-    if (found) {
-      terminatorPoints.push([foundLat, lon]);
+    if (crossings.length >= 2) {
+      // Two crossings: one entering night, one leaving night
+      const enterNight = crossings.find((c) => !c.toDay);
+      const leaveNight = crossings.find((c) => c.toDay);
+      if (enterNight && leaveNight) {
+        // Night zone: from enterNight.lon going east (wrapping) to leaveNight.lon
+        westEdge.push([lat, enterNight.lon]);
+        eastEdge.push([lat, leaveNight.lon]);
+      }
+    } else if (crossings.length === 1) {
+      // Near equinox: terminator is nearly vertical, only 1 crossing
+      // Check if lon=-180 is night or day
+      const altAt180 = SunCalc.getPosition(date, lat, -180).altitude;
+      if (altAt180 < 0) {
+        // Night starts at -180, crossing is where it ends
+        westEdge.push([lat, -180]);
+        eastEdge.push([lat, crossings[0].lon]);
+      } else {
+        // Day starts at -180, crossing is where night starts
+        westEdge.push([lat, crossings[0].lon]);
+        eastEdge.push([lat, 180]);
+      }
+    } else {
+      // No crossings: entire latitude is day or night
+      const alt = SunCalc.getPosition(date, lat, 0).altitude;
+      if (alt < 0) {
+        // Entire latitude is night
+        westEdge.push([lat, -180]);
+        eastEdge.push([lat, 180]);
+      }
+      // If entire latitude is day, skip it (no night polygon at this lat)
     }
   }
 
-  if (terminatorPoints.length < 2) return [];
+  if (westEdge.length === 0) return [];
 
-  // Which pole has daylight?
-  const altAtNorthPole = SunCalc.getPosition(date, 89, 0).altitude;
-  const dayPole = altAtNorthPole >= 0 ? 90 : -90;
-
-  // Build the "day polygon": terminator + close via the day pole
-  const dayPoly: [number, number][] = [
-    ...terminatorPoints,
-    [dayPole, terminatorPoints[terminatorPoints.length - 1][1]],
-    [dayPole, terminatorPoints[0][1]],
-    terminatorPoints[0],
+  // Build the night polygon: west edge (south→north) + east edge reversed (north→south)
+  const nightPoly: [number, number][] = [
+    // Add south pole cap if needed
+    [-90, westEdge[0][1]],
+    ...westEdge,
+    // Add north pole cap
+    [90, westEdge[westEdge.length - 1][1]],
+    [90, eastEdge[eastEdge.length - 1][1]],
+    ...[...eastEdge].reverse(),
+    [-90, eastEdge[0][1]],
+    [-90, westEdge[0][1]], // close
   ];
 
-  // Outer ring covering the whole world
-  const worldRing: [number, number][] = [
-    [-90, -180],
-    [-90, 180],
-    [90, 180],
-    [90, -180],
-    [-90, -180],
-  ];
-
-  // Return [outer, hole] — Leaflet renders the area between them (= night)
-  return [worldRing, dayPoly];
+  return [nightPoly];
 }
 
-function MapClickHandler({ onLocationSelect }: { onLocationSelect: (lat: number, lon: number) => void }) {
+function MapClickHandler({
+  onLocationSelect,
+}: {
+  onLocationSelect: (lat: number, lon: number) => void;
+}) {
   useMapEvents({
     click(e) {
       onLocationSelect(e.latlng.lat, e.latlng.lng);
@@ -120,7 +146,7 @@ export default function WorldMap({ location, onLocationSelect }: WorldMapProps) 
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {nightRings.length === 2 && (
+      {nightRings.length >= 1 && (
         <Polygon
           positions={nightRings}
           pathOptions={{
