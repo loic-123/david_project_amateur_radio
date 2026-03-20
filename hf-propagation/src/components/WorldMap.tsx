@@ -16,93 +16,89 @@ const locationIcon = L.divIcon({
 });
 
 /**
- * Compute the night polygon.
+ * Compute the night overlay polygon.
  *
- * Strategy: scan a grid of points, classify each as day or night,
- * then build a simple polygon covering the night side.
+ * Approach: find the sub-solar point (where the sun is directly overhead),
+ * then the anti-solar point is on the opposite side of the Earth.
+ * Night = the hemisphere facing away from the sun.
  *
- * Simpler approach: for each latitude, find the two longitudes where
- * sun altitude crosses 0 (dawn and dusk). The night area is between
- * these two longitudes on the dark side.
+ * For each latitude, we find the longitude where the sun crosses the horizon
+ * using binary search. The night zone at that latitude extends from that
+ * crossing to the other crossing, centered on the anti-solar longitude.
  */
-function computeNightPolygon(date: Date): [number, number][][] {
-  // For each latitude from -80 to 80, find the two longitude crossings
-  const latStep = 3;
-  const lonStep = 1;
+function computeNightPolygon(date: Date): [number, number][] {
+  // Find sub-solar point: where the sun is at zenith
+  // The sub-solar longitude is where it's solar noon
+  const sunPos = SunCalc.getPosition(date, 0, 0);
 
-  // We'll build the night polygon as two edges:
-  // - "west edge" of the night zone (going from south to north)
-  // - "east edge" of the night zone (going from north to south)
-  const westEdge: [number, number][] = [];
-  const eastEdge: [number, number][] = [];
-
-  for (let lat = -80; lat <= 80; lat += latStep) {
-    // Find longitude crossings at this latitude
-    const crossings: { lon: number; toDay: boolean }[] = [];
-
-    let prevAlt = SunCalc.getPosition(date, lat, -180).altitude;
-    for (let lon = -180 + lonStep; lon <= 180; lon += lonStep) {
-      const alt = SunCalc.getPosition(date, lat, lon).altitude;
-      if (prevAlt < 0 && alt >= 0) {
-        const frac = -prevAlt / (alt - prevAlt);
-        crossings.push({ lon: lon - lonStep + frac * lonStep, toDay: true });
-      } else if (prevAlt >= 0 && alt < 0) {
-        const frac = prevAlt / (prevAlt - alt);
-        crossings.push({ lon: lon - lonStep + frac * lonStep, toDay: false });
-      }
-      prevAlt = alt;
-    }
-
-    if (crossings.length >= 2) {
-      // Two crossings: one entering night, one leaving night
-      const enterNight = crossings.find((c) => !c.toDay);
-      const leaveNight = crossings.find((c) => c.toDay);
-      if (enterNight && leaveNight) {
-        // Night zone: from enterNight.lon going east (wrapping) to leaveNight.lon
-        westEdge.push([lat, enterNight.lon]);
-        eastEdge.push([lat, leaveNight.lon]);
-      }
-    } else if (crossings.length === 1) {
-      // Near equinox: terminator is nearly vertical, only 1 crossing
-      // Check if lon=-180 is night or day
-      const altAt180 = SunCalc.getPosition(date, lat, -180).altitude;
-      if (altAt180 < 0) {
-        // Night starts at -180, crossing is where it ends
-        westEdge.push([lat, -180]);
-        eastEdge.push([lat, crossings[0].lon]);
-      } else {
-        // Day starts at -180, crossing is where night starts
-        westEdge.push([lat, crossings[0].lon]);
-        eastEdge.push([lat, 180]);
-      }
-    } else {
-      // No crossings: entire latitude is day or night
-      const alt = SunCalc.getPosition(date, lat, 0).altitude;
-      if (alt < 0) {
-        // Entire latitude is night
-        westEdge.push([lat, -180]);
-        eastEdge.push([lat, 180]);
-      }
-      // If entire latitude is day, skip it (no night polygon at this lat)
+  // Find sub-solar longitude by checking where altitude is highest at equator
+  let maxAlt = -Infinity;
+  let subSolarLon = 0;
+  for (let lon = -180; lon <= 180; lon += 1) {
+    const alt = SunCalc.getPosition(date, 0, lon).altitude;
+    if (alt > maxAlt) {
+      maxAlt = alt;
+      subSolarLon = lon;
     }
   }
 
-  if (westEdge.length === 0) return [];
+  // Anti-solar longitude (center of night)
+  let antiSolarLon = subSolarLon + 180;
+  if (antiSolarLon > 180) antiSolarLon -= 360;
 
-  // Build the night polygon: west edge (south→north) + east edge reversed (north→south)
-  const nightPoly: [number, number][] = [
-    // Add south pole cap if needed
-    [-90, westEdge[0][1]],
-    ...westEdge,
-    // Add north pole cap
-    [90, westEdge[westEdge.length - 1][1]],
-    [90, eastEdge[eastEdge.length - 1][1]],
-    ...[...eastEdge].reverse(),
-    [-90, eastEdge[0][1]],
-    [-90, westEdge[0][1]], // close
+  // For each latitude, find the half-width of the night zone in degrees of longitude
+  // by binary-searching for where sun altitude = 0
+  const latStep = 2;
+  const leftEdge: [number, number][] = [];
+  const rightEdge: [number, number][] = [];
+
+  for (let lat = -85; lat <= 85; lat += latStep) {
+    // Check if this latitude is entirely day or entirely night
+    const altAtAntiSolar = SunCalc.getPosition(date, lat, antiSolarLon).altitude;
+    const altAtSubSolar = SunCalc.getPosition(date, lat, subSolarLon).altitude;
+
+    if (altAtAntiSolar >= 0) {
+      // Even at anti-solar point it's day → entire latitude is daytime (e.g., polar day)
+      continue;
+    }
+
+    if (altAtSubSolar < 0) {
+      // Even at sub-solar point it's night → entire latitude is night (polar night)
+      leftEdge.push([lat, antiSolarLon - 180]);
+      rightEdge.push([lat, antiSolarLon + 180]);
+      continue;
+    }
+
+    // Binary search for the half-width of the night zone
+    let lo = 0;
+    let hi = 180;
+    for (let iter = 0; iter < 20; iter++) {
+      const mid = (lo + hi) / 2;
+      let testLon = antiSolarLon + mid;
+      if (testLon > 180) testLon -= 360;
+      const alt = SunCalc.getPosition(date, lat, testLon).altitude;
+      if (alt < 0) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    const halfWidth = (lo + hi) / 2;
+
+    leftEdge.push([lat, antiSolarLon - halfWidth]);
+    rightEdge.push([lat, antiSolarLon + halfWidth]);
+  }
+
+  if (leftEdge.length === 0) return [];
+
+  // Build polygon: left edge (south→north), then right edge reversed (north→south)
+  const polygon: [number, number][] = [
+    ...leftEdge,
+    ...[...rightEdge].reverse(),
+    leftEdge[0], // close the polygon
   ];
 
-  return [nightPoly];
+  return polygon;
 }
 
 function MapClickHandler({
@@ -124,11 +120,11 @@ interface WorldMapProps {
 }
 
 export default function WorldMap({ location, onLocationSelect }: WorldMapProps) {
-  const [nightRings, setNightRings] = useState<[number, number][][]>([]);
+  const [nightPoly, setNightPoly] = useState<[number, number][]>([]);
 
   useEffect(() => {
     const update = () => {
-      setNightRings(computeNightPolygon(new Date()));
+      setNightPoly(computeNightPolygon(new Date()));
     };
     update();
     const interval = setInterval(update, 60000);
@@ -146,9 +142,9 @@ export default function WorldMap({ location, onLocationSelect }: WorldMapProps) 
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {nightRings.length >= 1 && (
+      {nightPoly.length > 0 && (
         <Polygon
-          positions={nightRings}
+          positions={nightPoly}
           pathOptions={{
             color: "transparent",
             fillColor: "#000028",
